@@ -223,7 +223,12 @@ const CONTENT_TYPES: Record<string, string> = {
 const WIDGET_SCRIPT_TAGS =
   `<script src="/selection.js" defer></script>` +
   `<script src="/ask-widget.js" defer></script><script src="/tours-widget.js" defer></script>` +
-  `<script src="/graphify-widget.js" defer></script>`;
+  `<script src="/graphify-widget.js" defer></script>` +
+  // City entry point — same-origin so it inherits whatever access path the dashboard used.
+  `<script>(function(){var t=new URLSearchParams(location.search).get("token");if(!t)return;` +
+  `var a=document.createElement("a");a.textContent="🏙 City";a.href="/city?token="+encodeURIComponent(t);` +
+  `a.style.cssText="position:fixed;bottom:24px;right:160px;z-index:9999;background:#0d1117;color:#e6edf3;border:1px solid #30363d;border-radius:20px;padding:8px 14px;font:12px system-ui;text-decoration:none;box-shadow:0 4px 14px rgba(0,0,0,.3);";` +
+  `document.addEventListener("DOMContentLoaded",function(){document.body.appendChild(a)});})();</script>`;
 
 function serveIndexHtmlWithWidget(res: ServerResponse): void {
   const absolute = path.join(DIST_DIR, "index.html");
@@ -239,11 +244,32 @@ function serveLocalScript(res: ServerResponse, filename: string): void {
   res.end(fs.readFileSync(absolute, "utf8"));
 }
 
+const CITY_DIR = path.join(HERE, "city");
+
+/** Serve the Code City page and its assets (vendored three.js included) from dist/city. */
+function serveCityFile(res: ServerResponse, relPath: string): void {
+  const absolute = path.resolve(CITY_DIR, relPath === "" ? "index.html" : relPath);
+  if (absolute !== CITY_DIR && !absolute.startsWith(CITY_DIR + path.sep)) {
+    res.statusCode = 403;
+    res.end("Forbidden");
+    return;
+  }
+  if (!fs.existsSync(absolute) || !fs.statSync(absolute).isFile()) {
+    res.statusCode = 404;
+    res.end("Not found");
+    return;
+  }
+  res.setHeader("Content-Type", CONTENT_TYPES[path.extname(absolute).toLowerCase()] ?? "application/octet-stream");
+  res.end(fs.readFileSync(absolute));
+}
+
 function serveStatic(res: ServerResponse, pathname: string): void {
   if (pathname === "/selection.js") return serveLocalScript(res, "selection.js");
   if (pathname === "/ask-widget.js") return serveLocalScript(res, "ask-widget.js");
   if (pathname === "/tours-widget.js") return serveLocalScript(res, "tours-widget.js");
   if (pathname === "/graphify-widget.js") return serveLocalScript(res, "graphify-widget.js");
+  if (pathname === "/city") return serveCityFile(res, "index.html");
+  if (pathname.startsWith("/city/")) return serveCityFile(res, pathname.slice("/city/".length));
 
   const relative = pathname === "/" ? "index.html" : pathname.replace(/^\/+/, "");
   const absolute = path.resolve(DIST_DIR, relative);

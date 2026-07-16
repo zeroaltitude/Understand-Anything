@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Code City — Understand-Anything</title>
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "/city/vendor/three.module.min.js",
+        "three/addons/": "/city/vendor/addons/"
+      }
+    }
+  </script>
+  <style>
+    html, body { margin: 0; height: 100%; background: #0d1117; color: #e6edf3; font-family: system-ui, -apple-system, sans-serif; overflow: hidden; }
+    #city-canvas { width: 100vw; height: 100vh; display: block; }
+    #city-hud { position: fixed; top: 16px; left: 16px; z-index: 20; display: flex; flex-direction: column; gap: 10px; max-width: 340px; }
+    #city-title { font-size: 15px; font-weight: 600; background: rgba(13,17,23,.8); border: 1px solid #30363d; border-radius: 10px; padding: 8px 12px; }
+    #city-title a { color: #58a6ff; text-decoration: none; font-weight: 400; font-size: 12px; margin-left: 8px; }
+    #city-search { background: #161b22; border: 1px solid #30363d; border-radius: 10px; color: #e6edf3; padding: 8px 12px; font-size: 13px; }
+    #city-storms { background: rgba(13,17,23,.85); border: 1px solid #30363d; border-radius: 10px; padding: 10px 12px; }
+    #city-storms h4 { margin: 0 0 4px; font-size: 13px; }
+    .storm-row { display: block; width: 100%; text-align: left; background: none; border: none; color: #ffb08a; font-size: 12px; padding: 4px 0; cursor: pointer; }
+    .storm-row:hover { color: #ff4d2e; }
+    #city-legend { font-size: 11px; color: #8b949e; background: rgba(13,17,23,.7); border-radius: 8px; padding: 6px 10px; }
+    #city-status { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 14px; color: #8b949e; z-index: 30; }
+    #city-info { position: fixed; top: 16px; right: 16px; z-index: 20; width: 300px; background: rgba(13,17,23,.9); border: 1px solid #30363d; border-radius: 12px; padding: 14px; display: none; }
+    #city-info.open { display: block; }
+    #city-info h3 { margin: 0 0 4px; font-size: 15px; }
+    #city-info .path { font-family: ui-monospace, monospace; font-size: 11px; color: #8b949e; word-break: break-all; margin-bottom: 8px; }
+    #city-info .meta { font-size: 12px; color: #8b949e; margin-top: 6px; }
+    #city-info .hint { font-size: 11px; color: #58a6ff; margin-top: 10px; }
+    #city-info .hot { color: #ff4d2e; font-size: 12px; }
+    #city-info .warm { color: #ff9d3d; font-size: 12px; }
+    #city-info .cold { color: #8b949e; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <canvas id="city-canvas"></canvas>
+  <div id="city-hud">
+    <div id="city-title">🏙 Code City<a href="#" onclick="location.href='/?token='+new URLSearchParams(location.search).get('token');return false;">← dashboard</a></div>
+    <input id="city-search" type="text" placeholder="Find a file… (Enter to fly)" />
+  </div>
+  <div id="city-info"></div>
+  <div id="city-status">Building the city…</div>
+  <script type="module" src="/city/city-hud.js"></script>
+</body>
+</html>
