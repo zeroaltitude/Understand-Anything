@@ -30,6 +30,10 @@ import { registerDashboardRoutes, shutdownAllViewers, type InteractiveLlmOptions
 import { ProjectStore, expandHome } from "./project-store.js";
 import { getChangedFiles, generatePrWalkthrough } from "./pr-diff.js";
 import { upsertTour, makeTourId } from "./tour-store.js";
+import { runGraphifyExtract, readGraphifyGraph, resolveGraphifyCommand, type GraphifyConfig } from "./graphify-run.js";
+import { convertGraphifyGraph } from "./graphify-convert.js";
+import { mergeGraphifyIntoPrimary, type MergeResult } from "./graphify-merge.js";
+import { saveGraphifyGraph, loadGraphifyGraph } from "./graphify-store.js";
 
 interface PluginApi {
   registerTool(def: {
@@ -52,6 +56,8 @@ interface PluginApi {
   logger: { info(...a: unknown[]): void; warn(...a: unknown[]): void; error(...a: unknown[]): void };
 }
 
+type AnalysisEngine = "native" | "graphify" | "both";
+
 interface UnderstandConfig {
   projects?: string[];
   anthropicApiKey?: string;
@@ -59,6 +65,7 @@ interface UnderstandConfig {
   concurrency?: number;
   maxFiles?: number;
   allowAddProject?: boolean;
+  graphify?: GraphifyConfig & { engine?: AnalysisEngine };
 }
 
 // ── Analysis job registry ───────────────────────────────────────────────────
@@ -73,6 +80,15 @@ interface AnalysisJob {
   progress: string[];
   result?: AnalyzeProjectResult;
   error?: string;
+  engine?: AnalysisEngine;
+  graphify?: {
+    ran: boolean;
+    merged: boolean;
+    stats?: MergeResult["stats"];
+    nodes?: number;
+    edges?: number;
+    error?: string;
+  };
 }
 
 const jobs = new Map<string, AnalysisJob>();
@@ -221,21 +237,91 @@ export function activate(api: PluginApi): void {
     return createLlmCaller(key, model);
   }
 
+  const graphifyConfigured = resolveGraphifyCommand(cfg.graphify) !== null;
+  const defaultEngine: AnalysisEngine = cfg.graphify?.engine ?? (graphifyConfigured ? "both" : "native");
+
+  /**
+   * Runs the graphify leg of an analysis: subprocess extraction → schema
+   * conversion → companion-graph persistence → (optionally) provenance-tagged
+   * merge into the primary graph. Returns rather than throws — a graphify
+   * failure must degrade the job, never sink a completed native analysis.
+   */
+  async function runGraphifyLeg(
+    root: string,
+    job: AnalysisJob,
+    pushProgress: (m: string) => void,
+    mergeIntoPrimary: boolean,
+  ): Promise<void> {
+    job.graphify = { ran: false, merged: false };
+    try {
+      const run = await runGraphifyExtract(root, cfg.graphify, pushProgress);
+      const raw = readGraphifyGraph(run.graphJsonPath);
+      const { graph: converted, droppedHyperedges, unknownRelations } = convertGraphifyGraph(raw, root, { idPrefix: "" });
+      if (droppedHyperedges > 0) pushProgress(`graphify: dropped ${droppedHyperedges} hyperedge(s) (not representable in UA schema v1)`);
+      if (unknownRelations.length > 0) pushProgress(`graphify: unknown relations mapped to "related": ${unknownRelations.join(", ")}`);
+
+      saveGraphifyGraph(root, converted);
+      job.graphify.ran = true;
+      job.graphify.nodes = converted.nodes.length;
+      job.graphify.edges = converted.edges.length;
+      pushProgress(`graphify: companion graph saved (${converted.nodes.length} nodes, ${converted.edges.length} edges, ${converted.layers.length} communities)`);
+
+      if (mergeIntoPrimary) {
+        const primary = loadGraph(root, { validate: false });
+        if (primary) {
+          const { graph: merged, stats } = mergeGraphifyIntoPrimary(primary, converted);
+          const { saveGraph } = await import("@understand-anything/core");
+          saveGraph(root, merged);
+          job.graphify.merged = true;
+          job.graphify.stats = stats;
+          pushProgress(
+            `graphify: merged into primary graph — ${stats.matchedNodes} nodes matched, ${stats.addedNodes} added, ${stats.agreedEdges} edges cross-confirmed, ${stats.addedEdges} added, ${stats.addedLayers} community layers`,
+          );
+        } else {
+          pushProgress("graphify: no primary graph to merge into — companion graph saved standalone");
+        }
+      }
+      graphCache.delete(root);
+    } catch (err) {
+      job.graphify.error = err instanceof Error ? err.message : String(err);
+      pushProgress(`graphify: engine failed (${job.graphify.error}) — continuing without it`);
+      log.warn(`[understand-anything] graphify engine failed for ${root}: ${job.graphify.error}`);
+    }
+  }
+
   /**
    * Starts (or reports already-running) analysis for a project. Shared by the
    * understand_analyze_project tool and the dashboard's "Understand this
    * project" button — one job-tracking path, not two.
+   *
+   * Engines: "native" = tree-sitter + LLM pipeline (unchanged behavior),
+   * "graphify" = deterministic graphify pass-1 only (no API key required),
+   * "both" = native then graphify, merged with provenance tags.
    */
-  function startAnalysis(root: string, opts: { concurrency?: number; maxFiles?: number } = {}): { started: true } | { error: string } {
+  function startAnalysis(
+    root: string,
+    opts: { concurrency?: number; maxFiles?: number; engine?: AnalysisEngine } = {},
+  ): { started: true } | { error: string } {
     const existing = jobs.get(root);
     if (existing?.state === "running") {
       return { error: `Analysis already running for ${root} (started ${existing.startedAt}).` };
     }
 
-    const llm = makeLlmCaller();
-    if (typeof llm !== "function") return { error: llm.error };
+    const engine = opts.engine ?? defaultEngine;
+    if (engine !== "native" && !graphifyConfigured) {
+      return { error: `Engine "${engine}" requires graphify to be configured (plugins.entries.understand-anything.config.graphify.dir or .cmd).` };
+    }
 
-    const job: AnalysisJob = { state: "running", startedAt: new Date().toISOString(), progress: [] };
+    // The graphify-only engine is deliberately usable without an Anthropic
+    // key — pass 1 is deterministic. Only native analysis needs the LLM.
+    let llm: LlmCaller | null = null;
+    if (engine !== "graphify") {
+      const resolved = makeLlmCaller();
+      if (typeof resolved !== "function") return { error: resolved.error };
+      llm = resolved;
+    }
+
+    const job: AnalysisJob = { state: "running", startedAt: new Date().toISOString(), progress: [], engine };
     jobs.set(root, job);
 
     const pushProgress = (message: string) => {
@@ -243,19 +329,38 @@ export function activate(api: PluginApi): void {
       if (job.progress.length > MAX_PROGRESS_LINES) job.progress.splice(0, job.progress.length - MAX_PROGRESS_LINES);
     };
 
-    void analyzeProject(root, llm, {
-      concurrency: opts.concurrency ?? defaultConcurrency,
-      maxFiles: opts.maxFiles ?? defaultMaxFiles,
-      onProgress: pushProgress,
-    })
-      .then((result) => {
+    void (async () => {
+      if (engine !== "graphify") {
+        const result = await analyzeProject(root, llm!, {
+          concurrency: opts.concurrency ?? defaultConcurrency,
+          maxFiles: opts.maxFiles ?? defaultMaxFiles,
+          onProgress: pushProgress,
+        });
+        job.result = result;
+        graphCache.delete(root);
+        log.info(
+          `[understand-anything] native analysis complete for ${root}: ${result.graph.nodes.length} nodes, ${result.graph.edges.length} edges (${result.filesAnalyzed} files).`,
+        );
+      }
+
+      if (engine !== "native") {
+        await runGraphifyLeg(root, job, pushProgress, engine === "both");
+        if (engine === "graphify") {
+          if (!job.graphify?.ran) throw new Error(job.graphify?.error ?? "graphify engine failed");
+          // Solo-graphify analysis: the converted graph IS the primary graph.
+          const converted = loadGraphifyGraph(root);
+          if (converted) {
+            const { saveGraph } = await import("@understand-anything/core");
+            saveGraph(root, converted);
+            graphCache.delete(root);
+            pushProgress("graphify: converted graph persisted as the primary knowledge graph");
+          }
+        }
+      }
+    })()
+      .then(() => {
         job.state = "done";
         job.finishedAt = new Date().toISOString();
-        job.result = result;
-        graphCache.delete(root); // force reload of the freshly-persisted graph
-        log.info(
-          `[understand-anything] analysis complete for ${root}: ${result.graph.nodes.length} nodes, ${result.graph.edges.length} edges (${result.filesAnalyzed} files).`,
-        );
       })
       .catch((err: unknown) => {
         job.state = "error";
@@ -299,7 +404,7 @@ export function activate(api: PluginApi): void {
   api.registerTool({
     name: "understand_analyze_project",
     description:
-      "Start (or restart) knowledge-graph analysis of a configured project. Runs in the background inside the gateway — tree-sitter structural analysis plus one LLM call per source file — and persists .ua/knowledge-graph.json when done. Poll progress with understand_status.",
+      "Start (or restart) knowledge-graph analysis of a configured project. Runs in the background inside the gateway and persists .ua/knowledge-graph.json when done. Engines: native (tree-sitter + one LLM call per file), graphify (deterministic multi-language extraction + community clustering, no LLM), or both (native enriched+merged with graphify, provenance-tagged edges). Poll progress with understand_status.",
     parameters: Type.Object({
       project: Type.Optional(
         Type.String({ description: "Configured project path or index. May be omitted when exactly one project is configured." }),
@@ -308,19 +413,28 @@ export function activate(api: PluginApi): void {
       concurrency: Type.Optional(
         Type.Integer({ minimum: 1, maximum: 20, description: `Concurrent LLM calls (default ${defaultConcurrency}).` }),
       ),
+      engine: Type.Optional(
+        Type.Union([Type.Literal("native"), Type.Literal("graphify"), Type.Literal("both")], {
+          description: `Analysis engine (default ${defaultEngine}). "graphify" and "both" require graphify configured in plugin config.`,
+        }),
+      ),
     }),
     async execute(_id, params) {
       const resolved = resolveProject(params.project);
       if ("error" in resolved) return textResult(resolved.error);
 
+      const engine = (params.engine as AnalysisEngine | undefined) ?? defaultEngine;
       const result = startAnalysis(resolved.root, {
         concurrency: params.concurrency as number | undefined,
         maxFiles: params.maxFiles as number | undefined,
+        engine,
       });
       if ("error" in result) return textResult(`${result.error} Poll with understand_status.`);
 
       return textResult(
-        `Analysis started for ${resolved.root} (model ${model}). This runs one LLM call per source file and may take a few minutes — poll with understand_status.`,
+        engine === "graphify"
+          ? `Graphify analysis started for ${resolved.root} — deterministic extraction, usually seconds. Poll with understand_status.`
+          : `Analysis started for ${resolved.root} (engine ${engine}, model ${model}). This runs one LLM call per source file and may take a few minutes — poll with understand_status.`,
       );
     },
   });
@@ -340,14 +454,17 @@ export function activate(api: PluginApi): void {
       const job = jobs.get(root);
       const cached = getGraph(root);
       const meta = loadMeta(root);
+      const companion = loadGraphifyGraph(root);
       return jsonResult({
         project: root,
         graphOnDisk: cached ? { nodes: cached.graph.nodes.length, edges: cached.graph.edges.length } : null,
+        graphifyCompanion: companion ? { nodes: companion.nodes.length, edges: companion.edges.length, layers: companion.layers.length } : null,
         ...(meta ? { meta } : {}),
         job: job
           ? {
               state: job.state,
               startedAt: job.startedAt,
+              ...(job.engine ? { engine: job.engine } : {}),
               ...(job.finishedAt ? { finishedAt: job.finishedAt } : {}),
               ...(job.error ? { error: job.error } : {}),
               ...(job.result
@@ -357,6 +474,7 @@ export function activate(api: PluginApi): void {
                     warnings: job.result.warnings,
                   }
                 : {}),
+              ...(job.graphify ? { graphify: job.graphify } : {}),
               recentProgress: job.progress.slice(-10),
             }
           : null,

@@ -178,6 +178,11 @@ function readSourceFile(url: URL): { statusCode: number; payload: unknown } {
 }
 
 function serveGraphJson(res: ServerResponse, fileName: string): void {
+  // Engine view toggle: when the graphify lens is active, the main graph
+  // request transparently serves the companion graph instead.
+  if (fileName === "knowledge-graph.json" && engineView === "graphify" && fs.existsSync(path.join(graphDir!, "graphify-graph.json"))) {
+    fileName = "graphify-graph.json";
+  }
   const candidate = path.join(graphDir!, fileName);
   if (fs.existsSync(candidate)) {
     try {
@@ -217,7 +222,8 @@ const CONTENT_TYPES: Record<string, string> = {
 
 const WIDGET_SCRIPT_TAGS =
   `<script src="/selection.js" defer></script>` +
-  `<script src="/ask-widget.js" defer></script><script src="/tours-widget.js" defer></script>`;
+  `<script src="/ask-widget.js" defer></script><script src="/tours-widget.js" defer></script>` +
+  `<script src="/graphify-widget.js" defer></script>`;
 
 function serveIndexHtmlWithWidget(res: ServerResponse): void {
   const absolute = path.join(DIST_DIR, "index.html");
@@ -237,6 +243,7 @@ function serveStatic(res: ServerResponse, pathname: string): void {
   if (pathname === "/selection.js") return serveLocalScript(res, "selection.js");
   if (pathname === "/ask-widget.js") return serveLocalScript(res, "ask-widget.js");
   if (pathname === "/tours-widget.js") return serveLocalScript(res, "tours-widget.js");
+  if (pathname === "/graphify-widget.js") return serveLocalScript(res, "graphify-widget.js");
 
   const relative = pathname === "/" ? "index.html" : pathname.replace(/^\/+/, "");
   const absolute = path.resolve(DIST_DIR, relative);
@@ -273,11 +280,12 @@ function readBody(req: IncomingMessage, maxBytes: number): Promise<string> {
   });
 }
 
-const TOKEN_VIA_HEADER = new Set(["/ask.json", "/generate-tour.json", "/generate-pr-tour.json"]);
+const TOKEN_VIA_HEADER = new Set(["/ask.json", "/generate-tour.json", "/generate-pr-tour.json", "/engine-view.json"]);
 const PROTECTED = new Set([
   "/knowledge-graph.json",
   "/domain-graph.json",
   "/diff-overlay.json",
+  "/graphify-graph.json",
   "/meta.json",
   "/config.json",
   "/file-content.json",
@@ -285,7 +293,15 @@ const PROTECTED = new Set([
   "/tours.json",
   "/generate-tour.json",
   "/generate-pr-tour.json",
+  "/engine-view.json",
 ]);
+
+// Which engine's graph /knowledge-graph.json serves. Server-side because the
+// dashboard's React app fetches the graph itself and we can't thread a query
+// param through it without forking the dashboard build; this server is
+// per-project and single-operator (token-gated on 127.0.0.1), so one flag is
+// the honest scope. The graphify view is a debugging/companion lens.
+let engineView: "native" | "graphify" = "native";
 
 const server = createServer((req, res) => {
   void (async () => {
@@ -329,6 +345,30 @@ const server = createServer((req, res) => {
       } catch (err) {
         sendJson(res, 500, { error: err instanceof Error ? err.message : String(err) });
       }
+      return;
+    }
+
+    if (pathname === "/engine-view.json") {
+      const graphifyAvailable = fs.existsSync(path.join(graphDir ?? projectRoot, "graphify-graph.json"));
+      if ((req.method ?? "GET").toUpperCase() === "POST") {
+        try {
+          const body = await readBody(req, 1024);
+          const parsed = JSON.parse(body || "{}") as { engine?: unknown };
+          if (parsed.engine !== "native" && parsed.engine !== "graphify") {
+            sendJson(res, 400, { error: 'engine must be "native" or "graphify"' });
+            return;
+          }
+          if (parsed.engine === "graphify" && !graphifyAvailable) {
+            sendJson(res, 400, { error: "No graphify companion graph for this project — run analysis with engine graphify or both first." });
+            return;
+          }
+          engineView = parsed.engine;
+        } catch (err) {
+          sendJson(res, 500, { error: err instanceof Error ? err.message : String(err) });
+          return;
+        }
+      }
+      sendJson(res, 200, { engine: engineView, graphifyAvailable });
       return;
     }
 

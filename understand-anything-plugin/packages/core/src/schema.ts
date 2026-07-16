@@ -446,6 +446,10 @@ export const GraphEdgeSchema = z.object({
   direction: z.enum(["forward", "backward", "bidirectional"]),
   description: z.string().optional(),
   weight: z.number().min(0).max(1),
+  // Multi-engine provenance (additive, absent on single-engine graphs).
+  origin: z.enum(["ua", "graphify", "both"]).optional(),
+  confidence: z.enum(["extracted", "inferred", "ambiguous"]).optional(),
+  confidenceScore: z.number().min(0).max(1).optional(),
 });
 
 export const LayerSchema = z.object({

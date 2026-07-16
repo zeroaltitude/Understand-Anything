@@ -140,6 +140,45 @@ local path or host into a "clone", defeating the projects allowlist this
 whole feature sits inside) and shells out to `git clone --depth 1` with a
 3-minute timeout.
 
+## Graphify engine (optional second analyzer)
+
+When `config.graphify` is set, analyses can run on two engines:
+
+- **native** — the pipeline above (tree-sitter + one LLM call per file).
+- **graphify** — [Graphify](https://github.com/Graphify-Labs/graphify)'s
+  deterministic pass-1 extraction (tree-sitter over 40+ languages, Leiden
+  community clustering, rationale nodes mined from comments) run as a
+  subprocess. No LLM, no API key, typically sub-second.
+- **both** (default when graphify is configured) — native first, then
+  graphify, merged into one graph with edge provenance: edges both engines
+  independently produced are marked `origin: "both"` / `confidence:
+  "extracted"` (the strongest signal available), graphify-only edges carry
+  `origin: "graphify"` plus their extraction confidence, and graphify's
+  communities land as extra dashboard layers (`gfy-community-*`). Node
+  reconciliation is on `(filePath, name, kind)`, never raw ids, and the merge
+  is idempotent — re-running strips and re-derives all graphify artifacts.
+
+The converted graphify graph is also persisted standalone as
+`.ua/graphify-graph.json` (same companion-file pattern as
+`domain-graph.json`), and the interactive dashboard grows a bottom-left
+engine chip to flip the rendered graph between the two lenses
+(`POST /engine-view.json`).
+
+Config:
+
+```jsonc
+"graphify": {
+  "dir": "/home/you/projects/graphify",   // uv-managed checkout, or:
+  // "cmd": ["graphify"],                  // pip-installed CLI override
+  "timeoutMs": 120000,
+  "engine": "both"                         // default engine when unspecified
+}
+```
+
+A graphify failure (missing binary, timeout, bad output) degrades gracefully:
+the job reports `graphify.error` in `understand_status` and the native result
+stands untouched.
+
 ## Install
 
 From the repo root:
