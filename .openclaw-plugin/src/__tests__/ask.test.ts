@@ -148,4 +148,63 @@ describe("askAboutProject", () => {
 
     expect(result.citedNodes.map((n) => n.id)).not.toContain("file:does-not-exist.ts");
   });
+
+  it("folds prior turns into the prompt so follow-up questions have context", async () => {
+    const root = makeTmpProject();
+    saveGraph(root, makeGraph(root));
+
+    let capturedPrompt = "";
+    const stubLlm: LlmCaller = async (_sys, userContent) => {
+      capturedPrompt = userContent;
+      return "ok";
+    };
+
+    await askAboutProject(root, "what about its tests?", stubLlm, [], [
+      { question: "how does auth work?", answer: "Auth is handled in src/auth.ts via login()." },
+    ]);
+
+    expect(capturedPrompt).toContain("Conversation so far in this session");
+    expect(capturedPrompt).toContain("Q: how does auth work?");
+    expect(capturedPrompt).toContain("A: Auth is handled in src/auth.ts via login().");
+    expect(capturedPrompt).toContain("Question: what about its tests?");
+  });
+
+  it("omits the conversation-history block entirely when there is no history", async () => {
+    const root = makeTmpProject();
+    saveGraph(root, makeGraph(root));
+
+    let capturedPrompt = "";
+    const stubLlm: LlmCaller = async (_sys, userContent) => {
+      capturedPrompt = userContent;
+      return "ok";
+    };
+
+    await askAboutProject(root, "how does auth work?", stubLlm);
+
+    expect(capturedPrompt).not.toContain("Conversation so far");
+  });
+
+  it("caps history to the most recent turns rather than resending an unbounded transcript", async () => {
+    const root = makeTmpProject();
+    saveGraph(root, makeGraph(root));
+
+    let capturedPrompt = "";
+    const stubLlm: LlmCaller = async (_sys, userContent) => {
+      capturedPrompt = userContent;
+      return "ok";
+    };
+
+    const longHistory = Array.from({ length: 10 }, (_, i) => ({
+      question: `question number ${i}`,
+      answer: `answer number ${i}`,
+    }));
+
+    await askAboutProject(root, "what about the latest one?", stubLlm, [], longHistory);
+
+    // Only the last 6 turns (indices 4..9) should survive; the oldest ones should not.
+    expect(capturedPrompt).not.toContain("question number 0");
+    expect(capturedPrompt).not.toContain("question number 3");
+    expect(capturedPrompt).toContain("question number 4");
+    expect(capturedPrompt).toContain("question number 9");
+  });
 });

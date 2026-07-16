@@ -212,11 +212,11 @@
         if (data.tour) playTour(data.tour);
       })
       .catch(function (err) {
-        alert("Could not generate PR walkthrough: " + err.message);
+        alert("Could not generate diff walkthrough: " + err.message);
       })
       .finally(function () {
         btn.disabled = false;
-        btn.textContent = "Generate PR walkthrough";
+        btn.textContent = "Generate diff walkthrough";
       });
   }
 
@@ -227,10 +227,10 @@
     style.textContent = STYLE;
     document.head.appendChild(style);
 
-    var fab = el("button", { id: "ua-tours-fab", title: "Tours" }, ["🧭"]);
+    var fab = el("button", { id: "ua-tours-fab", title: "Tours & Diff/PR walkthroughs" }, ["🧭"]);
     var panel = el("div", { id: "ua-tours-panel" });
     var header = el("div", { id: "ua-tours-header" }, [
-      "Tours",
+      "Tours & Diffs",
       el("button", { id: "ua-tours-close" }, ["×"]),
     ]);
     var body = el("div", { id: "ua-tours-body" });
@@ -242,16 +242,19 @@
     ]);
 
     var prGenerate = el("div", { id: "ua-pr-generate" }, [
-      el("h4", {}, ["Generate a PR walkthrough"]),
-      el("p", {}, ["Enter a PR number, or a base branch to diff against HEAD (e.g. main)."]),
+      el("h4", {}, ["Understand a diff (PR or branch)"]),
+      el("p", {}, ["Enter a GitHub PR number, or a base branch/commit to diff against HEAD (e.g. main) — walks you through the changed files and their blast radius."]),
       el("input", { id: "ua-pr-input", type: "text", placeholder: "42 or main" }),
-      el("button", { id: "ua-pr-generate-btn" }, ["Generate PR walkthrough"]),
+      el("button", { id: "ua-pr-generate-btn" }, ["Generate diff walkthrough"]),
     ]);
 
+    // "Understand a diff" is placed first — it's the section people search for
+    // by name; auto-tours and custom-tour generation are secondary once you're
+    // already exploring the codebase, not what brought most people to this panel.
     panel.appendChild(header);
+    panel.appendChild(prGenerate);
     panel.appendChild(body);
     panel.appendChild(generate);
-    panel.appendChild(prGenerate);
     document.body.appendChild(fab);
     document.body.appendChild(panel);
 

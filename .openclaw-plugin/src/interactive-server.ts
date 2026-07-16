@@ -24,7 +24,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadGraph, saveDiffOverlay } from "@understand-anything/core";
-import { askAboutProject } from "./ask.js";
+import { askAboutProject, type AskTurn } from "./ask.js";
 import { createLlmCaller } from "./llm.js";
 import { generateCustomTour } from "./custom-tour.js";
 import { getChangedFiles, generatePrWalkthrough } from "./pr-diff.js";
@@ -309,8 +309,8 @@ const server = createServer((req, res) => {
         return;
       }
       try {
-        const body = await readBody(req, 8192);
-        const parsed = JSON.parse(body || "{}") as { question?: unknown; selectedNodeIds?: unknown };
+        const body = await readBody(req, 32768);
+        const parsed = JSON.parse(body || "{}") as { question?: unknown; selectedNodeIds?: unknown; history?: unknown };
         const question = typeof parsed.question === "string" ? parsed.question.trim() : "";
         if (!question) {
           sendJson(res, 400, { error: "Missing question" });
@@ -319,7 +319,12 @@ const server = createServer((req, res) => {
         const selectedNodeIds = Array.isArray(parsed.selectedNodeIds)
           ? parsed.selectedNodeIds.filter((n): n is string => typeof n === "string")
           : [];
-        const result = await askAboutProject(projectRoot, question, llmCall, selectedNodeIds);
+        const history = Array.isArray(parsed.history)
+          ? parsed.history.filter(
+              (t): t is AskTurn => typeof t === "object" && t !== null && typeof (t as AskTurn).question === "string" && typeof (t as AskTurn).answer === "string",
+            )
+          : [];
+        const result = await askAboutProject(projectRoot, question, llmCall, selectedNodeIds, history);
         sendJson(res, 200, result);
       } catch (err) {
         sendJson(res, 500, { error: err instanceof Error ? err.message : String(err) });

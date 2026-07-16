@@ -9,15 +9,26 @@ const MAX_SNIPPET_CHARS = 4000;
 const MAX_SOURCE_FILE_BYTES = 1024 * 1024;
 
 const ASK_SYSTEM_PROMPT =
-  "You are answering a developer's question about a specific codebase. Use ONLY the context provided " +
-  "below — project description, matched knowledge-graph nodes, and source snippets. If the context doesn't " +
-  "contain enough information to answer confidently, say so plainly rather than guessing. Cite the relevant " +
-  "file paths in your answer where helpful. Respond in plain text (light markdown is fine), not JSON.";
+  "You are answering a developer's question about a specific codebase, as part of an ongoing chat session. Use " +
+  "ONLY the context provided below — project description, prior conversation turns (if any), matched " +
+  "knowledge-graph nodes, and source snippets. If the current question refers back to something from the prior " +
+  "conversation (e.g. 'it', 'that function', 'the one above'), resolve it using that history. If the context " +
+  "doesn't contain enough information to answer confidently, say so plainly rather than guessing. Cite the " +
+  "relevant file paths in your answer where helpful. Respond in plain text (light markdown is fine), not JSON.";
 
 export interface AskResult {
   answer: string;
   citedNodes: Array<{ id: string; name: string; type: string; filePath?: string }>;
 }
+
+export interface AskTurn {
+  question: string;
+  answer: string;
+}
+
+/** Bound on how many prior turns get folded into the prompt — keeps token growth
+ * predictable across a long session instead of resending an ever-growing transcript. */
+const MAX_HISTORY_TURNS = 6;
 
 function safeReadSnippet(projectRoot: string, filePath: string): string | null {
   try {
@@ -56,12 +67,20 @@ function nodeContext(n: GraphNode): string {
  * silently ignores that the user is looking at it (see custom-tour's
  * nodeIds-scoped generation, which already treats an explicit selection as
  * authoritative; Ask previously had no equivalent).
+ *
+ * `history` (prior question/answer turns from the same dashboard session) is
+ * folded into the prompt so follow-up questions ("what about its tests?") can
+ * resolve pronouns/references against what was actually discussed — every call
+ * here is otherwise a fresh, independent completion with no server-side session
+ * state, so without this the widget's chat-like UI (a persistent-looking
+ * scrollback) was silently lying: each turn had zero memory of the ones before it.
  */
 export async function askAboutProject(
   projectRoot: string,
   question: string,
   llmCall: LlmCaller,
   selectedNodeIds: string[] = [],
+  history: AskTurn[] = [],
 ): Promise<AskResult> {
   const graph: KnowledgeGraph | null = loadGraph(projectRoot, { validate: false });
   if (!graph) {
@@ -94,12 +113,19 @@ export async function askAboutProject(
     }
   }
 
+  const recentHistory = history.slice(-MAX_HISTORY_TURNS);
+  const historyBlock = recentHistory.length
+    ? `Conversation so far in this session (oldest first) — use it to resolve references like "it"/"that"/"the one above", but the current question is what you're answering now:\n${recentHistory
+        .map((t) => `Q: ${t.question}\nA: ${t.answer}`)
+        .join("\n\n")}\n\n`
+    : "";
+
   const prompt = `Project: ${graph.project.name}
 Description: ${graph.project.description}
 Languages: ${graph.project.languages.join(", ")}
 Frameworks: ${graph.project.frameworks.join(", ")}
 
-${selectedNodes.length ? `The developer currently has these node(s) selected/focused in the dashboard — treat them as the primary subject of the question unless the question clearly points elsewhere:\n${selectedNodes.map(nodeContext).join("\n")}\n\n` : ""}Matched knowledge-graph nodes for this question:
+${historyBlock}${selectedNodes.length ? `The developer currently has these node(s) selected/focused in the dashboard — treat them as the primary subject of the question unless the question clearly points elsewhere:\n${selectedNodes.map(nodeContext).join("\n")}\n\n` : ""}Matched knowledge-graph nodes for this question:
 ${searchMatches.map(nodeContext).join("\n") || (selectedNodes.length ? "(no additional strong matches beyond the selection above)" : "(no strong matches — answer from project description alone if possible)")}
 
 ${snippets.length ? `Source snippets:\n${snippets.join("\n\n")}\n\n` : ""}Question: ${question}`;

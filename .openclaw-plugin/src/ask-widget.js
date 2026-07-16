@@ -122,6 +122,14 @@
       window.uaSelection.subscribe(renderSelectionBar);
     }
 
+    // Turn history for this browser session — sent with every request so the
+    // backend (which is otherwise stateless per-call) can resolve follow-up
+    // questions ("what about its tests?") against what was actually said
+    // before. Capped to bound payload/prompt size on long sessions; the
+    // backend applies its own cap too, this just avoids sending unbounded data.
+    var MAX_HISTORY_TURNS = 6;
+    var history = [];
+
     var asking = false;
     function ask() {
       var question = input.value.trim();
@@ -140,6 +148,7 @@
         body: JSON.stringify({
           question: question,
           selectedNodeIds: window.uaSelection ? window.uaSelection.get() : [],
+          history: history.slice(-MAX_HISTORY_TURNS),
         }),
       })
         .then(function (res) {
@@ -151,6 +160,7 @@
         .then(function (data) {
           thinking.remove();
           addMessage(messages, "assistant", data.answer, data.citedNodes);
+          history.push({ question: question, answer: data.answer });
         })
         .catch(function (err) {
           thinking.remove();
