@@ -795,3 +795,27 @@ export const useDashboardStore = create<DashboardStore>()((set, get) => ({
   clearLayoutIssues: () => set({ layoutIssues: [] }),
 }));
 
+// Expose the current node selection to non-React embedders (viewer widgets,
+// browser extensions, tests). The dashboard's selection lives entirely in
+// this store — node components only receive derived isSelected props — so a
+// DOM-observation approach (e.g. watching React Flow's "selected" class,
+// which this app doesn't use) has nothing stable to hook. Mirroring the
+// store is the contract instead: `window.uaDashboardSelection` always holds
+// the current array of selected/focused node ids, and a "ua:selection"
+// CustomEvent (detail: string[]) fires on every change.
+if (typeof window !== "undefined") {
+  let lastSelectionKey = "";
+  const publish = (state: DashboardStore) => {
+    const ids = [state.focusNodeId ?? state.selectedNodeId].filter(
+      (id): id is string => typeof id === "string" && id.length > 0,
+    );
+    const key = ids.join(" ");
+    if (key === lastSelectionKey) return;
+    lastSelectionKey = key;
+    (window as unknown as { uaDashboardSelection: string[] }).uaDashboardSelection = ids;
+    window.dispatchEvent(new CustomEvent("ua:selection", { detail: ids }));
+  };
+  publish(useDashboardStore.getState());
+  useDashboardStore.subscribe(publish);
+}
+
