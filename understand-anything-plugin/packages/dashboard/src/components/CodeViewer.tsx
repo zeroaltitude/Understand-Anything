@@ -27,7 +27,7 @@ type SourceState =
 
 function fileContentUrl(filePath: string, token: string): string {
   const params = new URLSearchParams({ token, path: filePath });
-  return `/file-content.json?${params.toString()}`;
+  return `file-content.json?${params.toString()}`;
 }
 
 function fallbackLanguage(filePath: string | undefined): string {

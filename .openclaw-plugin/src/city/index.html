@@ -7,8 +7,8 @@
   <script type="importmap">
     {
       "imports": {
-        "three": "/city/vendor/three.module.min.js",
-        "three/addons/": "/city/vendor/addons/"
+        "three": "city/vendor/three.module.min.js",
+        "three/addons/": "city/vendor/addons/"
       }
     }
   </script>
@@ -39,11 +39,11 @@
 <body>
   <canvas id="city-canvas"></canvas>
   <div id="city-hud">
-    <div id="city-title">🏙 Code City<a href="#" onclick="location.href='/?token='+new URLSearchParams(location.search).get('token');return false;">← dashboard</a></div>
+    <div id="city-title">🏙 Code City<a href="#" onclick="location.href='./?token='+new URLSearchParams(location.search).get('token');return false;">← dashboard</a></div>
     <input id="city-search" type="text" placeholder="Find a file… (Enter to fly)" />
   </div>
   <div id="city-info"></div>
   <div id="city-status">Building the city…</div>
-  <script type="module" src="/city/city-hud.js"></script>
+  <script type="module" src="city/city-hud.js"></script>
 </body>
 </html>

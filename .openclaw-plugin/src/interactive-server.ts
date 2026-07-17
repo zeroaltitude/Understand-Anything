@@ -221,12 +221,12 @@ const CONTENT_TYPES: Record<string, string> = {
 };
 
 const WIDGET_SCRIPT_TAGS =
-  `<script src="/selection.js" defer></script>` +
-  `<script src="/ask-widget.js" defer></script><script src="/tours-widget.js" defer></script>` +
-  `<script src="/graphify-widget.js" defer></script>` +
+  `<script src="selection.js" defer></script>` +
+  `<script src="ask-widget.js" defer></script><script src="tours-widget.js" defer></script>` +
+  `<script src="graphify-widget.js" defer></script>` +
   // City entry point — same-origin so it inherits whatever access path the dashboard used.
   `<script>(function(){var t=new URLSearchParams(location.search).get("token");if(!t)return;` +
-  `var a=document.createElement("a");a.textContent="🏙 City";a.href="/city?token="+encodeURIComponent(t);` +
+  `var a=document.createElement("a");a.textContent="🏙 City";a.href="city?token="+encodeURIComponent(t);` +
   `a.style.cssText="position:fixed;bottom:24px;right:160px;z-index:9999;background:#0d1117;color:#e6edf3;border:1px solid #30363d;border-radius:20px;padding:8px 14px;font:12px system-ui;text-decoration:none;box-shadow:0 4px 14px rgba(0,0,0,.3);";` +
   `document.addEventListener("DOMContentLoaded",function(){document.body.appendChild(a)});})();</script>`;
 

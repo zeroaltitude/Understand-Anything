@@ -33,10 +33,10 @@ function loadWidgetScripts() {
   // selection.js must register before ask-widget.js reads it (same ordering
   // contract as the dashboard's WIDGET_SCRIPT_TAGS injection).
   const selection = document.createElement("script");
-  selection.src = "/selection.js";
+  selection.src = "selection.js";
   selection.onload = () => {
     const ask = document.createElement("script");
-    ask.src = "/ask-widget.js";
+    ask.src = "ask-widget.js";
     document.body.appendChild(ask);
   };
   document.body.appendChild(selection);
@@ -52,8 +52,8 @@ async function main() {
   const statusEl = document.getElementById("city-status");
   try {
     const [graph, overlay] = await Promise.all([
-      fetchJson("/knowledge-graph.json"),
-      fetchJson("/diff-overlay.json", true),
+      fetchJson("knowledge-graph.json"),
+      fetchJson("diff-overlay.json", true),
     ]);
     const model = buildCityModel(graph, overlay);
     statusEl.remove();

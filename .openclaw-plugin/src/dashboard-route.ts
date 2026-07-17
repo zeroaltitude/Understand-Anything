@@ -1,4 +1,4 @@
-import type { IncomingMessage, ServerResponse } from "node:http";
+import http, { type IncomingMessage, type ServerResponse } from "node:http";
 import { createRequire } from "node:module";
 import { spawn, type ChildProcessByStdio } from "node:child_process";
 import type { Readable } from "node:stream";
@@ -20,7 +20,7 @@ export interface InteractiveLlmOptions {
   model: string;
 }
 
-interface ViewerInstance {
+export interface ViewerInstance {
   proc: ChildProcessByStdio<null, Readable, Readable>;
   port: number;
   token: string;
@@ -199,6 +199,70 @@ function sendHtml(res: ServerResponse, status: number, html: string): void {
   res.end(html);
 }
 
+// ── Reverse proxy: gateway origin → per-project 127.0.0.1 viewer ─────────────
+// Serving the dashboards *through* the gateway's own port means no per-project
+// random ports ever reach the browser: Caddy/firewall/device-pairing all apply
+// once, at the gateway, for every project. Requires all dashboard/widget/city
+// URLs to be relative (they are, as of this change).
+
+const HOP_BY_HOP_HEADERS = new Set([
+  "connection",
+  "keep-alive",
+  "proxy-authenticate",
+  "proxy-authorization",
+  "te",
+  "trailer",
+  "transfer-encoding",
+  "upgrade",
+  "host",
+]);
+
+const PROXY_TIMEOUT_MS = 120_000;
+
+/**
+ * Streams one request through to a viewer instance and streams the response
+ * back. `targetPath` must already include the query string. Exported for
+ * direct integration testing without a gateway process.
+ */
+export function proxyToViewer(req: IncomingMessage, res: ServerResponse, viewer: ViewerInstance, targetPath: string): void {
+  viewer.lastUsedAtMs = Date.now();
+  const headers: Record<string, string | string[]> = {};
+  for (const [name, value] of Object.entries(req.headers)) {
+    if (!HOP_BY_HOP_HEADERS.has(name.toLowerCase()) && value !== undefined) headers[name] = value;
+  }
+
+  const upstream = http.request(
+    { hostname: "127.0.0.1", port: viewer.port, path: targetPath, method: req.method, headers, timeout: PROXY_TIMEOUT_MS },
+    (upstreamRes) => {
+      const outHeaders: Record<string, string | string[]> = {};
+      for (const [name, value] of Object.entries(upstreamRes.headers)) {
+        if (!HOP_BY_HOP_HEADERS.has(name.toLowerCase()) && value !== undefined) outHeaders[name] = value;
+      }
+      res.writeHead(upstreamRes.statusCode ?? 502, outHeaders);
+      upstreamRes.pipe(res);
+    },
+  );
+  upstream.on("timeout", () => upstream.destroy(new Error("viewer proxy timeout")));
+  upstream.on("error", (err) => {
+    if (!res.headersSent) {
+      res.writeHead(502, { "Content-Type": "text/plain" });
+      res.end(`Dashboard proxy error: ${err.message}`);
+    } else {
+      res.destroy();
+    }
+  });
+  req.pipe(upstream);
+}
+
+/** Ensure the viewer's access token is present in a path's query string (never overrides an existing one). */
+export function withViewerToken(restPathAndQuery: string, token: string): string {
+  const u = new URL(restPathAndQuery, "http://localhost");
+  if (!u.searchParams.has("token")) u.searchParams.set("token", token);
+  return u.pathname + u.search;
+}
+
+const PROJECT_PROXY_RE = /^\/understand-anything\/p\/(\d+)(\/.*)?$/;
+
 function redirectToPicker(res: ServerResponse, error?: string): void {
   const location = error ? `/understand-anything?error=${encodeURIComponent(error)}` : "/understand-anything";
   res.writeHead(302, { Location: location });
@@ -341,6 +405,40 @@ export function registerDashboardRoutes(
       const { pathname, query } = pathFromUrl(req.url);
       const method = (req.method ?? "GET").toUpperCase();
 
+      // Same-origin dashboard proxy: /understand-anything/p/<idx>/<rest> —
+      // the browser only ever talks to the gateway's port; the per-project
+      // 127.0.0.1 viewer stays an implementation detail.
+      const proxyMatch = PROJECT_PROXY_RE.exec(pathname);
+      if (proxyMatch) {
+        const projects = opts.getProjects();
+        const idx = Number(proxyMatch[1]);
+        if (!Number.isInteger(idx) || idx < 0 || idx >= projects.length) {
+          return sendHtml(res, 404, '<p>Unknown project index. <a href="/understand-anything">Back</a></p>');
+        }
+        const projectRoot = projects[idx];
+        if (!hasGraph(projectRoot)) {
+          return sendHtml(res, 404, `<p>No knowledge graph for <code>${escapeHtml(projectRoot)}</code> yet — analyze it first.</p>`);
+        }
+        try {
+          const viewer = await getOrStartViewer(projectRoot, log, opts.getLlmOptions());
+          const rest = proxyMatch[2];
+          if (rest === undefined || rest === "") {
+            // Canonicalize to the trailing-slash form so the page's relative
+            // URLs resolve inside the /p/<idx>/ prefix.
+            const search = new URL(req.url ?? "/", "http://localhost").search;
+            res.writeHead(302, { Location: withViewerToken(`/understand-anything/p/${idx}/${search}`, viewer.token) });
+            res.end();
+            return;
+          }
+          const search = new URL(req.url ?? "/", "http://localhost").search;
+          proxyToViewer(req, res, viewer, withViewerToken(`${rest}${search}`, viewer.token));
+        } catch (err) {
+          log.error(`[understand-anything] proxy failed for ${projectRoot}:`, err);
+          sendHtml(res, 502, `<p>Failed to reach dashboard viewer: ${escapeHtml(err instanceof Error ? err.message : String(err))}</p>`);
+        }
+        return;
+      }
+
       if (pathname === "/understand-anything/analyze" && method === "POST") {
         const projects = opts.getProjects();
         const idx = Number(query.get("project"));
@@ -383,8 +481,12 @@ export function registerDashboardRoutes(
           );
         }
         try {
+          // Same-origin redirect into the gateway-mounted proxy — the browser
+          // never sees the viewer's 127.0.0.1 port (it wouldn't be reachable
+          // from another machine anyway; the gateway's port is the one that
+          // Caddy/firewall/pairing already cover).
           const viewer = await getOrStartViewer(projectRoot, log, opts.getLlmOptions());
-          res.writeHead(302, { Location: `http://127.0.0.1:${viewer.port}/?token=${viewer.token}` });
+          res.writeHead(302, { Location: `/understand-anything/p/${idx}/?token=${viewer.token}` });
           res.end();
         } catch (err) {
           log.error(`[understand-anything] failed to start viewer for ${projectRoot}:`, err);

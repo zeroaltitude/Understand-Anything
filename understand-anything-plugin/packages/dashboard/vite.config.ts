@@ -182,6 +182,9 @@ function readSourceFile(url: URL) {
 }
 
 export default defineConfig({
+  // Relative asset URLs so the built dashboard can be served at the root OR
+  // under a path prefix (gateway reverse proxy) without a rebuild.
+  base: "./",
   test: {
     environment: "node",
     include: ["src/**/__tests__/**/*.test.ts"],

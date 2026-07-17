@@ -61,8 +61,9 @@ function dataUrl(fileName: string, token: string | null): string {
     const base = import.meta.env.BASE_URL || "/";
     return `${base.endsWith("/") ? base : `${base}/`}${fileName}`;
   }
-  const path = `/${fileName}`;
-  return token ? `${path}?token=${encodeURIComponent(token)}` : path;
+  // Relative (no leading slash) so the app works both at the server root and
+  // mounted under a path prefix (e.g. the gateway's /understand-anything/p/<idx>/ proxy).
+  return token ? `${fileName}?token=${encodeURIComponent(token)}` : fileName;
 }
 
 /**

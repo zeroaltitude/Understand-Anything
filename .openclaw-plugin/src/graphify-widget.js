@@ -17,7 +17,7 @@
     "#ua-engine-chip .ua-engine-active{color:#58a6ff;font-weight:600;}\n";
 
   function init() {
-    fetch("/engine-view.json", { headers: { "X-Ask-Token": TOKEN } })
+    fetch("engine-view.json", { headers: { "X-Ask-Token": TOKEN } })
       .then(function (res) { return res.json(); })
       .then(function (data) {
         if (!data.graphifyAvailable) return; // nothing to toggle to
@@ -42,11 +42,11 @@
         render(data.engine);
 
         chip.addEventListener("click", function () {
-          fetch("/engine-view.json", { headers: { "X-Ask-Token": TOKEN } })
+          fetch("engine-view.json", { headers: { "X-Ask-Token": TOKEN } })
             .then(function (res) { return res.json(); })
             .then(function (current) {
               var next = current.engine === "graphify" ? "native" : "graphify";
-              return fetch("/engine-view.json", {
+              return fetch("engine-view.json", {
                 method: "POST",
                 headers: { "Content-Type": "application/json", "X-Ask-Token": TOKEN },
                 body: JSON.stringify({ engine: next }),

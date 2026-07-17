@@ -134,7 +134,7 @@
   }
 
   function loadTours() {
-    return authedFetch("/tours.json").then(function (res) { return res.json(); }).then(function (data) { return data.tours || []; });
+    return authedFetch("tours.json").then(function (res) { return res.json(); }).then(function (data) { return data.tours || []; });
   }
 
   function renderTourList() {
@@ -158,7 +158,7 @@
     btn.disabled = true;
     btn.textContent = "Generating…";
 
-    authedFetch("/generate-tour.json", {
+    authedFetch("generate-tour.json", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ nodeIds: getSelectedNodeIds(), prompt: prompt }),
@@ -195,7 +195,7 @@
     btn.disabled = true;
     btn.textContent = "Generating…";
 
-    authedFetch("/generate-pr-tour.json", {
+    authedFetch("generate-pr-tour.json", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),

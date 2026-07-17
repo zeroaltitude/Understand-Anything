@@ -142,7 +142,7 @@
       sendBtn.disabled = true;
       var thinking = addMessage(messages, "assistant", "Thinking…");
 
-      fetch("/ask.json", {
+      fetch("ask.json", {
         method: "POST",
         headers: { "Content-Type": "application/json", "X-Ask-Token": TOKEN },
         body: JSON.stringify({
