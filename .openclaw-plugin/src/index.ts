@@ -633,3 +633,11 @@ export function activate(api: PluginApi): void {
     `[understand-anything] activated: ${store.list().length} project(s), model ${model}, tools understand_list_projects/analyze_project/status/search/get_node, dashboard at /understand-anything.`,
   );
 }
+
+// The plugin loader's export contract changed upstream (July 2026): it
+// resolves a `register` function from the default export (or a bare function
+// default) and never inspects named exports — a named `activate` alone now
+// fails validation with "missing register/activate export". Keep `activate`
+// as the implementation and alias it here; both loader generations accept
+// this shape.
+export default { id: "understand-anything", register: activate, activate };
