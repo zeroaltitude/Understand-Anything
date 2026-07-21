@@ -1,21 +1,29 @@
-// three.js renderer for the Code City — districts as ground discs, buildings
-// as a single InstancedMesh (one draw call), diff heat as emissive color.
-// All model/layout logic lives in city-model.js; this file only draws + picks.
+// three.js renderer for the Code City v2 — nested containment districts as
+// stacked ground discs, buildings as a single InstancedMesh (one draw call),
+// facet skins as per-instance colors. All model/layout logic lives in
+// city-model.js; facet values/palettes in facet-model.js; this file only
+// draws, picks, and repaints.
+//
+// The skeleton never moves: applyFacet(id) rewrites ONLY the instance color
+// buffer (O(buildings) color writes, no re-layout), which is what makes facet
+// switching instant at any city size.
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 
-const TYPE_COLORS = {
-  file: 0x5a9ee6,
-  module: 0xd9a441,
-  function: 0x5a9e6f,
-  class: 0xb07fd9,
-  document: 0xd97fa8,
-  config: 0x7fd9c9,
-  concept: 0xe6c35a,
-};
-const DEFAULT_COLOR = 0x8b949e;
-const HOT_COLOR = 0xff4d2e;
-const WARM_COLOR = 0xff9d3d;
+const HIGHLIGHT_COLOR = 0xffffff;
+const PLATE_BASE = 0x131a23;
+const PLATE_STEP = 0x0a0d12; // additive lightening per depth level
+const PLATE_HEAT = 0x66200f;
+
+function plateColor(depth, heat, weatherActive) {
+  const base = new THREE.Color(PLATE_BASE).add(
+    new THREE.Color(PLATE_STEP).multiplyScalar(Math.min(depth, 4)),
+  );
+  if (weatherActive && heat > 0) {
+    return base.lerp(new THREE.Color(PLATE_HEAT), Math.min(1, heat * 1.6));
+  }
+  return base;
+}
 
 function makeLabelSprite(text, scale) {
   const canvas = document.createElement("canvas");
@@ -38,12 +46,17 @@ function makeLabelSprite(text, scale) {
   return sprite;
 }
 
-export function createCityView(canvas, model, callbacks = {}) {
+/**
+ * @param {HTMLCanvasElement} canvas
+ * @param {ReturnType<import("./city-model.js").buildCityModel>} model
+ * @param {{facets: Array<any>, defaultFacetId: string}} facetCatalog
+ * @param {{onBuildingPick?: Function, onDistrictPick?: Function, onClear?: Function}} callbacks
+ */
+export function createCityView(canvas, model, facetCatalog, callbacks = {}) {
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0x0d1117);
-  scene.fog = new THREE.Fog(0x0d1117, 800, 3200);
 
   const camera = new THREE.PerspectiveCamera(55, 1, 1, 6000);
   const controls = new OrbitControls(camera, canvas);
@@ -55,34 +68,51 @@ export function createCityView(canvas, model, callbacks = {}) {
   sun.position.set(300, 500, 200);
   scene.add(sun);
 
-  // Overall extent → initial camera framing.
-  let extent = 100;
-  for (const d of model.districts) {
-    extent = Math.max(extent, Math.hypot(d.x, d.z) + d.radius);
-  }
+  // Fog + far plane scale with the city so deep containment trees (large
+  // root radii) neither fade out nor clip at the far corner.
+  const extent = Math.max(100, model.root.radius);
+  scene.fog = new THREE.Fog(0x0d1117, extent * 0.8, extent * 3.5);
+  camera.far = Math.max(6000, extent * 6);
+  camera.updateProjectionMatrix();
   camera.position.set(extent * 0.9, extent * 0.85, extent * 0.9);
   controls.target.set(0, 0, 0);
 
-  // ── Districts: ground discs + labels ──────────────────────────────────────
+  // ── Districts: nested ground discs, depth-stacked, + labels ────────────────
+  // Skip the synthetic root plate when it has exactly one child and no direct
+  // buildings (a repo whose files all live under one top dir) — it adds a ring
+  // of dead space around everything.
+  const drawnDistricts = model.districts.filter(
+    (d) => !(d.depth === 0 && d.children.length === 1 && d.buildings.length === 0),
+  );
   const districtMeshes = [];
-  for (const d of model.districts) {
-    const heatTint = new THREE.Color(0x161d27).lerp(new THREE.Color(0x66200f), Math.min(1, d.heat * 1.6));
+  for (const d of drawnDistricts) {
     const disc = new THREE.Mesh(
-      new THREE.CylinderGeometry(d.radius, d.radius, 1.5, 48),
-      new THREE.MeshStandardMaterial({ color: heatTint, roughness: 0.95 }),
+      new THREE.CylinderGeometry(d.radius, d.radius, 1.2, 48),
+      new THREE.MeshStandardMaterial({ roughness: 0.95 }),
     );
-    disc.position.set(d.x, -0.75, d.z);
+    disc.position.set(d.x, -1.4 + d.depth * 0.9, d.z);
     disc.userData.district = d;
     scene.add(disc);
     districtMeshes.push(disc);
 
-    const label = makeLabelSprite(d.name, 22);
-    label.position.set(d.x, 30 + d.radius * 0.12, d.z);
-    scene.add(label);
+    // Label the shallow tiers always; deeper tiers only when they're sizable —
+    // flying in reveals detail (cheap LOD without swap machinery).
+    if (d.depth <= 2 || d.radius >= 60) {
+      const label = makeLabelSprite(d.name, Math.max(10, 22 - d.depth * 4));
+      label.position.set(d.x, 26 + d.radius * 0.1 - d.depth * 3, d.z);
+      scene.add(label);
+    }
   }
 
-  // ── Buildings: one InstancedMesh, per-instance color ──────────────────────
-  const buildings = model.districts.flatMap((d) => d.buildings.map((b) => ({ b, d })));
+  function paintPlates(weatherActive) {
+    for (const mesh of districtMeshes) {
+      const d = mesh.userData.district;
+      mesh.material.color.copy(plateColor(d.depth, d.heat, weatherActive));
+    }
+  }
+
+  // ── Buildings: one InstancedMesh, facet-driven per-instance color ──────────
+  const buildings = model.buildings;
   const box = new THREE.BoxGeometry(1, 1, 1);
   box.translate(0, 0.5, 0); // grow upward from the ground
   const instanced = new THREE.InstancedMesh(
@@ -92,16 +122,32 @@ export function createCityView(canvas, model, callbacks = {}) {
   );
   const m = new THREE.Matrix4();
   const color = new THREE.Color();
-  buildings.forEach(({ b, d }, i) => {
+  buildings.forEach((b, i) => {
     m.makeScale(b.width, b.height, b.width);
-    m.setPosition(d.x + b.x, 0, d.z + b.z);
+    m.setPosition(b.ax, 0, b.az);
     instanced.setMatrixAt(i, m);
-    color.setHex(b.heat === "hot" ? HOT_COLOR : b.heat === "warm" ? WARM_COLOR : (TYPE_COLORS[b.dominantType] ?? DEFAULT_COLOR));
-    instanced.setColorAt(i, color);
   });
   instanced.instanceMatrix.needsUpdate = true;
-  if (instanced.instanceColor) instanced.instanceColor.needsUpdate = true;
   scene.add(instanced);
+
+  // ── Facet skins ─────────────────────────────────────────────────────────────
+  let activeFacet = null;
+
+  function applyFacet(facetId) {
+    const facet = facetCatalog.facets.find((f) => f.id === facetId) ?? facetCatalog.facets[0];
+    activeFacet = facet;
+    buildings.forEach((b, i) => {
+      color.setHex(facet.colorOf(b));
+      instanced.setColorAt(i, color);
+    });
+    if (highlightIndex >= 0) {
+      color.setHex(HIGHLIGHT_COLOR);
+      instanced.setColorAt(highlightIndex, color);
+    }
+    instanced.instanceColor.needsUpdate = true;
+    paintPlates(facet.id === "weather");
+    return facet;
+  }
 
   // ── Picking ────────────────────────────────────────────────────────────────
   const raycaster = new THREE.Raycaster();
@@ -110,10 +156,7 @@ export function createCityView(canvas, model, callbacks = {}) {
 
   function setHighlight(i, on) {
     if (i < 0 || i >= buildings.length) return;
-    const { b } = buildings[i];
-    color.setHex(
-      on ? 0xffffff : b.heat === "hot" ? HOT_COLOR : b.heat === "warm" ? WARM_COLOR : (TYPE_COLORS[b.dominantType] ?? DEFAULT_COLOR),
-    );
+    color.setHex(on ? HIGHLIGHT_COLOR : activeFacet.colorOf(buildings[i]));
     instanced.setColorAt(i, color);
     instanced.instanceColor.needsUpdate = true;
   }
@@ -124,9 +167,20 @@ export function createCityView(canvas, model, callbacks = {}) {
     pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
     raycaster.setFromCamera(pointer, camera);
     const hit = raycaster.intersectObject(instanced, false)[0];
-    if (hit && hit.instanceId !== undefined) return { kind: "building", ...buildings[hit.instanceId], index: hit.instanceId };
-    const discHit = raycaster.intersectObjects(districtMeshes, false)[0];
-    if (discHit) return { kind: "district", d: discHit.object.userData.district };
+    if (hit && hit.instanceId !== undefined) {
+      return { kind: "building", b: buildings[hit.instanceId], index: hit.instanceId };
+    }
+    // Districts overlap by construction (nesting) — pick the DEEPEST plate hit
+    // so clicking inside a sub-district selects it, not its ancestor.
+    const discHits = raycaster.intersectObjects(districtMeshes, false);
+    if (discHits.length > 0) {
+      let best = discHits[0].object.userData.district;
+      for (const h of discHits) {
+        const d = h.object.userData.district;
+        if (d.depth > best.depth) best = d;
+      }
+      return { kind: "district", d: best };
+    }
     return null;
   }
 
@@ -140,7 +194,7 @@ export function createCityView(canvas, model, callbacks = {}) {
     if (hit?.kind === "building") {
       highlightIndex = hit.index;
       setHighlight(hit.index, true);
-      callbacks.onBuildingPick?.(hit.b, hit.d);
+      callbacks.onBuildingPick?.(hit.b);
     } else if (hit?.kind === "district") {
       callbacks.onDistrictPick?.(hit.d);
     } else {
@@ -182,5 +236,7 @@ export function createCityView(canvas, model, callbacks = {}) {
     renderer.render(scene, camera);
   });
 
-  return { flyTo, districts: model.districts };
+  applyFacet(facetCatalog.defaultFacetId);
+
+  return { flyTo, applyFacet, districts: model.districts };
 }
