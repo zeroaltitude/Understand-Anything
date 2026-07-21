@@ -18,7 +18,7 @@ export default function TokenGate({ onTokenValid }: TokenGateProps) {
     setError(null);
 
     try {
-      const res = await fetch(`/knowledge-graph.json?token=${encodeURIComponent(token)}`);
+      const res = await fetch(`knowledge-graph.json?token=${encodeURIComponent(token)}`);
       if (res.ok) {
         onTokenValid(token);
       } else if (res.status === 403) {

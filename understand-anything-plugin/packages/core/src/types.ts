@@ -74,6 +74,11 @@ export interface GraphEdge {
   direction: "forward" | "backward" | "bidirectional";
   description?: string;
   weight: number; // 0-1
+  /** Which analysis engine produced this edge. Absent = single-engine graph (treated as "ua"). */
+  origin?: "ua" | "graphify" | "both";
+  /** Extraction confidence: "extracted" = provable from source, "inferred" = deduced by an LLM/heuristic (see confidenceScore), "ambiguous" = conflicting evidence. Cross-engine agreement (origin "both") is the strongest signal and is always "extracted". */
+  confidence?: "extracted" | "inferred" | "ambiguous";
+  confidenceScore?: number; // 0-1, only meaningful when confidence is "inferred"
 }
 
 // Layer (logical grouping)
@@ -112,6 +117,20 @@ export interface KnowledgeGraph {
   edges: GraphEdge[];
   layers: Layer[];
   tour: TourStep[];
+}
+
+// DiffOverlay — maps a set of changed files onto the knowledge graph so the
+// dashboard can highlight changed vs. affected (blast-radius) nodes. Matches
+// the shape the understand-diff skill already writes/reads at
+// <ua-dir>/diff-overlay.json (see skills/understand-diff/SKILL.md step 8) —
+// this type/persistence pair formalizes that existing on-disk contract.
+export interface DiffOverlay {
+  version: string;
+  baseBranch?: string;
+  generatedAt: string;
+  changedFiles: string[];
+  changedNodeIds: string[];
+  affectedNodeIds: string[];
 }
 
 // Theme configuration (for dashboard customization)
